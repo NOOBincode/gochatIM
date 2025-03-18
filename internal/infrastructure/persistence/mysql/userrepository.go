@@ -8,12 +8,12 @@ import (
 
 	"GochatIM/internal/domain/entity"
 	"GochatIM/internal/domain/event"
-	"GochatIM/internal/domain/repo/cache"
 	"GochatIM/internal/domain/repo/user"
+	"GochatIM/internal/infrastructure/cache"
 	"GochatIM/internal/infrastructure/messaging"
+	"GochatIM/internal/infrastructure/task"
 	"GochatIM/pkg/logger"
 	"GochatIM/pkg/singleflight"
-
 	"gorm.io/gorm"
 )
 
@@ -48,15 +48,17 @@ type UserRepositoryImpl struct {
 	userCache     cache.UserCache
 	kafkaProducer *messaging.KafkaProducer
 	sf            *singleflight.Group
+	taskClient    *task.Client
 }
 
 // NewUserRepository 创建用户仓储
-func NewUserRepository(db *gorm.DB, userCache cache.UserCache, kafkaProducer *messaging.KafkaProducer, sf *singleflight.Group) user.Repository {
+func NewUserRepository(db *gorm.DB, userCache cache.UserCache, kafkaProducer *messaging.KafkaProducer, sf *singleflight.Group, taskClient *task.Client) user.Repository {
 	return &UserRepositoryImpl{
 		db:            db,
 		userCache:     userCache,
 		kafkaProducer: kafkaProducer,
 		sf:            sf,
+		taskClient:    taskClient,
 	}
 }
 
@@ -101,37 +103,37 @@ func (r *UserRepositoryImpl) FindByID(ctx context.Context, id uint64) (*entity.U
 		return user, nil
 	}
 
-	key := fmt.Sprintf("user:%d",id)
-	v,err,_ := r.sf.Do(key,func () (interface{},error) {
-		user,err := r.userCache.GetUser(ctx,id)
-		if err == nil && user != nil{
-			logger.Infof("用户缓存命中(singleflight二次检查):userID=%d",id)
-			return user,nil
+	key := fmt.Sprintf("user:%d", id)
+	v, err, _ := r.sf.Do(key, func() (interface{}, error) {
+		user, err := r.userCache.GetUser(ctx, id)
+		if err == nil && user != nil {
+			logger.Infof("用户缓存命中(singleflight二次检查):userID=%d", id)
+			return user, nil
 		}
-	//查数据库
-	var model UserModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("用户不存在")
+		//查数据库
+		var model UserModel
+		if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, errors.New("用户不存在")
+			}
+			logger.Errorf("查询用户失败: %v", err)
+			return nil, err
 		}
-		logger.Errorf("查询用户失败: %v", err)
-		return nil, err
-	}
 
-	// 转换为实体
-	user = modelToEntity(&model)
+		// 转换为实体
+		user = modelToEntity(&model)
 
-	// 更新缓存
-	if err := r.userCache.SetUser(ctx, user); err != nil {
-		logger.Warnf("更新用户缓存失败: %v", err)
-	}
+		// 更新缓存
+		if err := r.userCache.SetUser(ctx, user); err != nil {
+			logger.Warnf("更新用户缓存失败: %v", err)
+		}
 
-	return user, nil
+		return user, nil
 	})
 	if err != nil {
-		return nil,err
+		return nil, err
 	}
-	return v.(*entity.User),nil
+	return v.(*entity.User), nil
 }
 
 // FindByUsername 根据用户名查找用户

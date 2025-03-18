@@ -1,6 +1,8 @@
 package websocket
 
 import (
+	"GochatIM/internal/domain/gateway"
+	"GochatIM/internal/domain/model"
 	"GochatIM/internal/infrastructure/messaging"
 	"GochatIM/pkg/logger"
 	"context"
@@ -12,6 +14,31 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/gorilla/websocket"
 )
+
+// 确保 Gateway 实现了 gateway.MessageGateway 接口
+var _ gateway.MessageGateway = (*Gateway)(nil)
+
+type Connection struct {
+	UserID     uint64
+	DeviceID   string
+	Conn       *websocket.Conn
+	Send       chan []byte
+	Closed     chan struct{}
+	LastActive time.Time
+	mu         sync.Mutex
+}
+
+type Gateway struct {
+	connections     map[uint64]map[string]*Connection
+	ConnectionMutex sync.RWMutex
+	//升级器
+	Upgrater *websocket.Upgrader
+
+	KafkaProducer *messaging.KafkaProducer
+	//上下文
+	ctx    context.Context
+	cancel context.CancelFunc
+}
 
 const (
 	MessageTypeText     = 1
@@ -49,28 +76,7 @@ type Message struct {
 	Content         string `json:"content,omitempty"`
 	Timestamp       int64  `json:"timestamp,omitempty"`
 	Extra           string `json:"extra,omitempty"`
-}
-
-type Connection struct {
-	UserID     uint64
-	DeviceID   string
-	Conn       *websocket.Conn
-	Send       chan []byte
-	Closed     chan struct{}
-	LastActive time.Time
-	mu         sync.Mutex
-}
-
-type Gateway struct {
-	connections     map[uint64]map[string]*Connection
-	ConnectionMutex sync.RWMutex
-	//升级器
-	Upgrater *websocket.Upgrader
-
-	KafkaProducer *messaging.KafkaProducer
-	//上下文
-	ctx    context.Context
-	cancel context.CancelFunc
+	ReceiverType    int    `json:"receiver_type,omitempty"`
 }
 
 func NewGateway(kafkaProducer *messaging.KafkaProducer) *Gateway {
@@ -272,20 +278,20 @@ func (g *Gateway) writePump(conn *Connection) {
 }
 
 func (g *Gateway) handleMessage(conn *Connection, data []byte) {
-	var message Message
+	var message model.Message
 	if err := sonic.Unmarshal(data, &message); err != nil {
 		logger.Errorf("解析消息错误: %v", err)
 		return
 	}
 	switch message.Operation {
-	case OperationHeartbeat:
-		HeartbeatAck := Message{
-			Operation: OperationHeartbeatAck,
+	case model.OperationHeartbeat:
+		HeartbeatAck := model.Message{
+			Operation: model.OperationHeartbeatAck,
 			Timestamp: time.Now().Unix(),
 		}
 		data, _ := sonic.Marshal(HeartbeatAck)
 		conn.Send <- data
-	case OperationSendMessage:
+	case model.OperationSendMessage:
 		message.SenderID = conn.UserID
 		message.Timestamp = time.Now().Unix()
 
@@ -293,7 +299,7 @@ func (g *Gateway) handleMessage(conn *Connection, data []byte) {
 		if messageKey == "" {
 			messageKey = fmt.Sprintf("%d_%d_%d", message.SenderID, message.ReceiverID, message.Timestamp)
 		}
-		if err := g.KafkaProducer.SendMessage(MessageSendTopic, messageKey, data); err != nil {
+		if err := g.KafkaProducer.SendMessage(model.MessageSendTopic, messageKey, data); err != nil {
 			logger.Errorf("发送消息到Kafka失败: %v", err)
 			errorMsg := Message{
 				Operation: OperationMessageAck,

@@ -2,13 +2,12 @@ package messaging
 
 import (
 	"GochatIM/internal/domain/event"
-	"GochatIM/internal/domain/repo/cache"
+	"GochatIM/internal/infrastructure/cache"
 	"GochatIM/pkg/logger"
 	"context"
-	"strconv"
-
 	"github.com/IBM/sarama"
 	"github.com/bytedance/sonic"
+	"strconv"
 )
 
 // CacheDeleteConsumer 缓存删除事件消费者

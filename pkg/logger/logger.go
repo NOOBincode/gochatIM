@@ -146,3 +146,7 @@ func Sync() {
 	_ = Logger.Sync()
 	_ = SugarLogger.Sync()
 }
+
+func NewLogger() *zap.Logger {
+	return Logger
+}
